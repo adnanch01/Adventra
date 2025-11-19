@@ -97,6 +97,10 @@ export default function ThingsToDoPage() {
     <div className="max-w-4xl mx-auto mt-8 px-4">
       <div className="bg-white rounded shadow p-4 mb-4">
         <h2 className="text-2xl font-semibold">Plan your next adventure</h2>
+<<<<<<< HEAD
+=======
+        <p className="text-sm text-gray-600">Tell me what kind of activity you want and where — we'll find great options to add to your itinerary.</p>
+>>>>>>> 10ab995 (Added the things to do feature)
       </div>
 
       <div className="bg-white rounded shadow p-4">
