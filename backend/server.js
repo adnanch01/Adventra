@@ -32,7 +32,7 @@ if (process.env.NODE_ENV === "production") {
   app.use(express.static(frontendPath));
 
   // FIXED FOR EXPRESS 5 — must use "*" not "/*"
-  app.get("*", (req, res) => {
+  app.use((req, res) => {
     res.sendFile(path.join(frontendPath, "index.html"));
   });
 }
