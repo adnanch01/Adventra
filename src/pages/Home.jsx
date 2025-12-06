@@ -173,6 +173,7 @@ export default function Home() {
     setLoading(true);
     setError("");
     setResults([]);
+
     try {
       // determine coords
       let lat = null;
@@ -194,12 +195,12 @@ export default function Home() {
           console.warn('Geocode failed for location', location, e);
         }
       }
+
       if (!lat || !lng) {
         setError('Please enter or select a location');
         return;
       }
 
-      // determine kinds
       const kindsToUse = q && q.trim().length > 0 ? (ACTIVITY_TO_KINDS[q.trim().toLowerCase()] || q.trim()) : null;
 
       // try backend proxy to OpenTripMap
@@ -212,6 +213,7 @@ export default function Home() {
           setResults(list);
           return;
         }
+
         // retry without kinds if we requested kinds
         if (r.ok && kindsToUse) {
           const retryUrl = `/api/opentripmap/radius?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&radius=5000&limit=30`;
@@ -232,7 +234,6 @@ export default function Home() {
       // fallback to Overpass
       const over = await fetchOverpass(lat, lng, 5000, q);
       if (over && over.length > 0) {
-        // normalize keys to match mapFeatureToPoi output where possible
         const normalized = over.map((p) => ({ xid: p.xid || null, name: p.name, kinds: p.kinds, preview: p.preview, lat: p.lat, lon: p.lon }));
         setResults(normalized);
         return;
@@ -303,11 +304,12 @@ export default function Home() {
     setResults([]);
 
     try {
+      // Hotel search (Stays)
       const params = new URLSearchParams();
       if (q) params.append("location", q);
       if (date) params.append("checkin", date);
 
-      const res = await fetch(`/api/hotels/search?${params.toString()}`);
+      const res = await fetch(`http://127.0.0.1:5001/api/hotels/search?${params.toString()}`);
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(errorData.error || "Hotel search failed");
