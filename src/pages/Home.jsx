@@ -2,11 +2,15 @@ import React, { useState, useRef, useEffect } from "react";
 import TopDestinations from "../components/TopDestinations";
 import FeaturedActivities from "../components/FeaturedActivities";
 import { BedDouble, Plane, Map, X } from "lucide-react";
+import AddressAutocomplete from "../components/AddressAutocomplete";
+import PlaceSearch from "../components/PlaceSearch";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("Stays");
   const [q, setQ] = useState("");
   const [date, setDate] = useState("");
+  const [location, setLocation] = useState("");
+  const [locationCoords, setLocationCoords] = useState(null); // { lat, lon }
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -55,13 +59,194 @@ export default function Home() {
     }
   };
 
+  // Map activity keywords to OpenTripMap kinds (same mapping as PlaceSearch)
+  const ACTIVITY_TO_KINDS = {
+    museum: 'museums',
+    museums: 'museums',
+    hiking: 'natural',
+    hike: 'natural',
+    food: 'restaurants',
+    restaurant: 'restaurants',
+    restaurants: 'restaurants',
+    beach: 'beaches',
+    shopping: 'shops',
+    shop: 'shops',
+    park: 'parks'
+  };
+
   const handleSearch = async () => {
     if (activeTab === "Flights") {
       await handleFlightSearch();
+    } else if (activeTab === "Things to Do") {
+      await handleThingsSearch();
     } else {
       await handleGeneralSearch();
     }
   };
+
+  // Map OpenTripMap feature/response to a common POI shape used by UI
+  function mapFeatureToPoi(f) {
+    if (!f) return null;
+    try {
+      if (f.properties && f.properties.xid) {
+        return {
+          xid: f.properties.xid,
+          name: f.properties.name || f.properties.kinds || 'POI',
+          kinds: f.properties.kinds,
+          dist: f.properties.dist,
+          lon: f.geometry && f.geometry.coordinates ? f.geometry.coordinates[0] : null,
+          lat: f.geometry && f.geometry.coordinates ? f.geometry.coordinates[1] : null,
+          preview: f.properties.preview && f.properties.preview.source ? f.properties.preview.source : null
+        };
+      }
+      return {
+        xid: f.xid || f.properties?.xid || f.id,
+        name: f.name || f.kinds || f.properties?.name || 'POI',
+        kinds: f.kinds || f.properties?.kinds,
+        lon: f.point?.lon || f.geometry?.coordinates?.[0] || null,
+        lat: f.point?.lat || f.geometry?.coordinates?.[1] || null,
+        preview: f.preview?.source || null
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Overpass fallback (simplified): query OSM for nodes matching common tags
+  async function fetchOverpass(lat, lon, radius = 5000, activityKeyword) {
+    try {
+      const kind = activityKeyword && activityKeyword.trim().length > 0 ? activityKeyword.trim().toLowerCase() : null;
+      const activityToOsm = {
+        museum: 'tourism=museum',
+        museums: 'tourism=museum',
+        hiking: 'tourism=information',
+        food: 'amenity=restaurant|amenity=cafe|amenity=fast_food',
+        beach: 'natural=beach',
+        shopping: 'shop',
+        park: 'leisure=park'
+      };
+      let filters = [];
+      if (kind && activityToOsm[kind]) {
+        const mapped = activityToOsm[kind];
+        mapped.split('|').forEach((m) => {
+          const [k, v] = m.split('=');
+          if (v) filters.push(`node["${k}"="${v}"](around:${radius},${lat},${lon});`);
+          else filters.push(`node["${k}"](around:${radius},${lat},${lon});`);
+        });
+      } else {
+        filters = [
+          `node["shop"](around:${radius},${lat},${lon});`,
+          `node["tourism"](around:${radius},${lat},${lon});`,
+          `node["amenity"](around:${radius},${lat},${lon});`
+        ];
+      }
+      const query = `[out:json][timeout:25];(${filters.join('')});out center;`;
+      const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: query, headers: { 'Content-Type': 'text/plain' } });
+      if (!res.ok) return [];
+      const data = await res.json().catch(() => null);
+      if (!data || !data.elements) return [];
+      const list = data.elements.map((el) => {
+        const name = el.tags && (el.tags.name || el.tags['shop'] || el.tags['amenity'] || el.tags['tourism']) || 'Place';
+        const preview = el.tags && (el.tags.image || el.tags['image']) ? el.tags.image || el.tags['image'] : null;
+        const lon2 = el.lon || (el.center && el.center.lon) || null;
+        const lat2 = el.lat || (el.center && el.center.lat) || null;
+        return {
+          xid: null,
+          osmId: el.id,
+          osmLink: `https://www.openstreetmap.org/node/${el.id}`,
+          name,
+          kinds: Object.keys(el.tags || {}).join(', '),
+          dist: null,
+          lon: lon2,
+          lat: lat2,
+          preview
+        };
+      }).filter(Boolean);
+      return list;
+    } catch (e) {
+      console.warn('Overpass fetch failed', e);
+      return [];
+    }
+  }
+
+  async function handleThingsSearch() {
+    setLoading(true);
+    setError("");
+    setResults([]);
+    try {
+      // determine coords
+      let lat = null;
+      let lng = null;
+      if (locationCoords && locationCoords.lat && locationCoords.lon) {
+        lat = locationCoords.lat;
+        lng = locationCoords.lon;
+      } else if (location) {
+        try {
+          const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(location)}&limit=1`, { headers: { 'User-Agent': 'Aventra/1.0 (contact)' } });
+          if (geoRes.ok) {
+            const geoJson = await geoRes.json();
+            if (Array.isArray(geoJson) && geoJson.length > 0) {
+              lat = geoJson[0].lat;
+              lng = geoJson[0].lon;
+            }
+          }
+        } catch (e) {
+          console.warn('Geocode failed for location', location, e);
+        }
+      }
+      if (!lat || !lng) {
+        setError('Please enter or select a location');
+        return;
+      }
+
+      // determine kinds
+      const kindsToUse = q && q.trim().length > 0 ? (ACTIVITY_TO_KINDS[q.trim().toLowerCase()] || q.trim()) : null;
+
+      // try backend proxy to OpenTripMap
+      try {
+        const proxyUrl = `/api/opentripmap/radius?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&radius=5000&limit=30${kindsToUse ? `&kinds=${encodeURIComponent(kindsToUse)}` : ''}`;
+        const r = await fetch(proxyUrl);
+        const data = await r.json().catch(() => null);
+        if (r.ok && data && (data.features || (Array.isArray(data) && data.length > 0))) {
+          const list = (data.features || data || []).map((f) => mapFeatureToPoi(f)).filter(Boolean);
+          setResults(list);
+          return;
+        }
+        // retry without kinds if we requested kinds
+        if (r.ok && kindsToUse) {
+          const retryUrl = `/api/opentripmap/radius?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&radius=5000&limit=30`;
+          const r2 = await fetch(retryUrl);
+          if (r2.ok) {
+            const data2 = await r2.json().catch(() => null);
+            if (data2 && (data2.features || (Array.isArray(data2) && data2.length > 0))) {
+              const list2 = (data2.features || data2 || []).map((f) => mapFeatureToPoi(f)).filter(Boolean);
+              setResults(list2);
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Proxy opentripmap failed', e);
+      }
+
+      // fallback to Overpass
+      const over = await fetchOverpass(lat, lng, 5000, q);
+      if (over && over.length > 0) {
+        // normalize keys to match mapFeatureToPoi output where possible
+        const normalized = over.map((p) => ({ xid: p.xid || null, name: p.name, kinds: p.kinds, preview: p.preview, lat: p.lat, lon: p.lon }));
+        setResults(normalized);
+        return;
+      }
+
+      setError('No activities found for that location. Try a broader location or different activity.');
+    } catch (err) {
+      console.error('Things search failed', err);
+      setError(err.message || 'Search failed');
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const handleFlightSearch = async () => {
     if (!origin || !destination) {
@@ -110,38 +295,27 @@ export default function Home() {
   };
 
   const handleGeneralSearch = async () => {
+    // Only handle Stays (hotels) here. "Things to Do" uses the PlaceSearch component directly.
+    if (activeTab !== "Stays") return;
+
     setLoading(true);
     setError("");
     setResults([]);
 
     try {
-      if (activeTab === "Stays") {
-        // Hotel search
-        const params = new URLSearchParams();
-        if (q) params.append("location", q);
-        if (date) params.append("checkin", date);
+      const params = new URLSearchParams();
+      if (q) params.append("location", q);
+      if (date) params.append("checkin", date);
 
-        const res = await fetch(`/api/hotels/search?${params.toString()}`);
-        if (!res.ok) {
-          const errorData = await res.json();
-          throw new Error(errorData.error || "Hotel search failed");
-        }
-        const data = await res.json();
-        setResults(data.results || []);
-        if (data.results?.length === 0) {
-          setError("No hotels found in this location");
-        }
-      } else {
-        // Things to Do search (existing logic)
-        const params = new URLSearchParams();
-        if (q) params.append("q", q);
-        if (date) {
-          params.append("start", `${date}T00:00:00Z`);
-          params.append("end", `${date}T23:59:59Z`);
-        }
-        const res = await fetch(`/api/search?${params.toString()}`);
-        const data = await res.json();
-        setResults(data.results || []);
+      const res = await fetch(`/api/hotels/search?${params.toString()}`);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || "Hotel search failed");
+      }
+      const data = await res.json();
+      setResults(data.results || []);
+      if (data.results?.length === 0) {
+        setError("No hotels found in this location");
       }
     } catch (err) {
       console.error("search failed", err);
@@ -255,12 +429,59 @@ export default function Home() {
       );
     }
 
-    // Default search bar for other tabs
+    // Things to Do search bar — show compact inputs in the hero (activity + location)
+    if (activeTab === "Things to Do") {
+      return (
+        <div className="bg-white rounded-xl shadow-xl flex flex-col md:flex-row items-center justify-between p-4 md:space-x-4 space-y-3 md:space-y-0 max-w-4xl mx-auto animate-fadeUp">
+          <input
+            type="text"
+            placeholder="What are you looking for? (e.g. museum, hiking)"
+            className="w-full md:w-1/3 p-3 border rounded-lg text-black placeholder-gray-500 focus:ring-2 focus:ring-blue-400 transition-all duration-300"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            aria-label="things-query"
+          />
+
+          <div className="w-full md:w-1/3">
+            <AddressAutocomplete
+              value={location}
+              placeholder="Location (city or place)"
+              onChange={(val) => {
+                setLocation(val);
+                setLocationCoords(null);
+              }}
+              onSelect={(place) => {
+                if (place && place.display_name) setLocation(place.display_name);
+                if (place && place.lat && place.lon) setLocationCoords({ lat: place.lat, lon: place.lon });
+              }}
+            />
+          </div>
+
+          <input
+            type="date"
+            className="w-full md:w-1/6 p-3 border rounded-lg text-black placeholder-gray-500 focus:ring-2 focus:ring-blue-400 transition-all duration-300"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            aria-label="things-date"
+          />
+
+          <button
+            className="relative bg-blue-600 text-white px-6 py-3 rounded-lg overflow-hidden group transition-all duration-300 w-full md:w-auto"
+            onClick={handleSearch}
+          >
+            <span className="absolute inset-0 bg-gradient-to-r from-blue-400 via-indigo-400 to-blue-600 opacity-0 group-hover:opacity-100 transition-all duration-300 blur-md"></span>
+            <span className="relative z-10">Search Activities</span>
+          </button>
+        </div>
+      );
+    }
+
+    // Default search bar for Stays (hotels)
     return (
       <div className="bg-white rounded-xl shadow-xl flex flex-col md:flex-row items-center justify-between p-4 md:space-x-4 space-y-3 md:space-y-0 max-w-3xl mx-auto animate-fadeUp">
         <input
           type="text"
-          placeholder={`Search ${activeTab.toLowerCase()}...`}
+          placeholder={`Search stays...`}
           className="w-full md:w-1/3 p-3 border rounded-lg text-black placeholder-gray-500 focus:ring-2 focus:ring-blue-400 focus:scale-[1.02] transition-all duration-300"
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -502,25 +723,54 @@ export default function Home() {
                     </div>
                   ))}
                 </div>
+              ) : activeTab === "Things to Do" ? (
+                <ul className="space-y-3">
+                  {results.map((p, i) => (
+                    <li key={p.xid || `${p.lat}-${p.lon}-${i}`} className="p-3 border rounded hover:shadow-sm transition-shadow flex items-start gap-3 bg-white">
+                      <div className="w-20 h-16 flex-shrink-0 bg-gray-100 rounded overflow-hidden flex items-center justify-center">
+                        {p.preview ? (
+                          <img src={p.preview} alt={p.name} className="object-cover w-full h-full" />
+                        ) : (
+                          <div className="text-xs text-gray-400">No image</div>
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <div className="font-medium text-sm">{p.name}</div>
+                          <div className="text-xs text-gray-400">{p.kinds}</div>
+                        </div>
+                        {p.dist !== undefined && <div className="text-xs text-gray-500 mt-1">{Math.round(p.dist)} m away</div>}
+                        <div className="mt-2 flex items-center gap-2">
+                          <button onClick={() => window.dispatchEvent(new CustomEvent('aventra:addPlace', { detail: p }))} className="text-sm bg-blue-600 text-white px-3 py-1 rounded">Add</button>
+                          {(() => {
+                            let detailsHref = '#';
+                            if (p.osmLink) {
+                              detailsHref = p.osmLink;
+                            } else if (p.xid) {
+                              detailsHref = `https://opentripmap.com/en/poi/${p.xid}`;
+                            } else if (p.lat && p.lon) {
+                              detailsHref = `https://www.openstreetmap.org/#map=18/${p.lat}/${p.lon}`;
+                            }
+                            return (
+                              <a target="_blank" rel="noreferrer" href={detailsHref} className="text-sm text-gray-600 border px-3 py-1 rounded">Details</a>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               ) : (
                 <ul className="space-y-3">
                   {results.map((r) => (
                     <li key={r.id} className="p-4 bg-white rounded shadow">
                       <div className="font-semibold text-lg">{r.title}</div>
                       <div className="text-sm text-gray-600">
-                        {r.start_time || ""} •{" "}
-                        {r.venue_name || r.venue_address || ""}
+                        {r.start_time || ""} • {r.venue_name || r.venue_address || ""}
                       </div>
                       {r.url && (
                         <div className="mt-2">
-                          <a
-                            className="text-blue-600"
-                            href={r.url}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Open on source
-                          </a>
+                          <a className="text-blue-600" href={r.url} target="_blank" rel="noreferrer">Open on source</a>
                         </div>
                       )}
                     </li>

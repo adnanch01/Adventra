@@ -83,6 +83,15 @@ app.use(
   })
 );
 
+// Proxy the generic search endpoint to the Flask content service (app.py on 5000)
+app.use(
+  "/api/search",
+  createProxyMiddleware({
+    target: "http://127.0.0.1:5000",
+    changeOrigin: true,
+  })
+);
+
 const PORT = process.env.PORT || 8080;
 const MONGO_URI = process.env.MONGO_URI;
 
