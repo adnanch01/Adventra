@@ -44,9 +44,9 @@ git push origin feature/your-feature-name
 5. Open a Pull Request (PR)
 
 On GitHub, open a PR from your branch → dev.
-# aventra_project_swe
+# Adventra
 
-Aventra — semester project (SWE) demonstrating a small travel web app with a React frontend, Node proxy, and Python Flask services.
+Adventra — semester project (SWE) demonstrating a small travel web app with a React frontend, Node proxy, and Python Flask services.
 
 This README explains how to set up and run the project locally, highlights key features, and lists configuration and troubleshooting steps.
 
