@@ -94,7 +94,7 @@ export default function AddressAutocomplete({ value, onChange, onSelect, placeho
           }
         }}
         onFocus={() => setShow(true)}
-        className="w-full p-2 border rounded"
+        className="w-full p-2 border rounded text-black bg-white"
       />
       {show && suggestions.length > 0 && (
         <div className="absolute z-50 left-0 right-0 bg-white border rounded mt-1 max-h-60 overflow-auto shadow">

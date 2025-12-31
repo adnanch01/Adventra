@@ -83,6 +83,15 @@ app.use(
   })
 );
 
+// Proxy the generic search endpoint to the Flask content service (app.py on 5000)
+app.use(
+  "/api/search",
+  createProxyMiddleware({
+    target: "http://127.0.0.1:5000",
+    changeOrigin: true,
+  })
+);
+
 const PORT = process.env.PORT || 8080;
 const MONGO_URI = process.env.MONGO_URI;
 
@@ -92,9 +101,22 @@ mongoose
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-// Serve React build folder
-const buildPath = path.join(__dirname, "../build");
-app.use(express.static(buildPath));
+app.get("/", (req, res) => {
+  res.send("Backend is working!");
+});
+
+// PRODUCTION: serve frontend
+if (process.env.NODE_ENV === "production") {
+  const frontendPath = path.join(__dirname, "../frontend/dist");
+  app.use(express.static(frontendPath));
+
+  // Serve index for any unmatched route in production
+  // Use `/*` to avoid path-to-regexp parsing issues with a plain `*`.
+  // Catch-all fallback for single-page app — use app.use to avoid path-to-regexp parsing
+  app.use((req, res) => {
+    res.sendFile(path.join(frontendPath, "index.html"));
+  });
+}
 
 // PRODUCTION: serve frontend
 if (process.env.NODE_ENV === "production") {
